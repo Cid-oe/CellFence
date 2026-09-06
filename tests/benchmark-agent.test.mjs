@@ -275,6 +275,16 @@ test("oracle module does not import CellFence engines or CLI", () => {
   assert(!/@cellfence|packages\/engine|packages\/cli|checkRepository|validateImports/u.test(oracleSource));
 });
 
+test("example benchmark result validates against result schema", () => {
+  const validator = resultSchemaValidator();
+  const examplePath = path.join(benchmarkDir, "results", "example-result.json");
+  assert.ok(fs.existsSync(examplePath), "example-result.json should exist");
+  const exampleResult = JSON.parse(fs.readFileSync(examplePath, "utf8"));
+  const isValid = validator(exampleResult);
+  assert.equal(isValid, true, JSON.stringify(validator.errors, null, 2));
+});
+
+
 function prepareReplayWorkspace(fixtureName, replayName) {
   const root = tempDir(`benchmark-${fixtureName}-`);
   const initialRoot = path.join(root, "initial");

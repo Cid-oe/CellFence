@@ -33,6 +33,9 @@ Every run writes `result.json` using `benchmark/schema/result.schema.json`:
 - Final Gate Decision: `finalGateDecision`
 - Independent Oracle Result: `oracleDecision`
 
+A sanitized example result illustrating the schema structure is available at [`benchmark/results/example-result.json`](results/example-result.json). It is provided strictly for schema inspection and development tooling, and is illustrative only (not a product claim).
+
+
 ## Independent Oracle
 
 The Oracle lives in `benchmark/oracle/index.mjs`. It does not import CellFence engine packages, the CLI, or CellFence JSON output. It compares task expectations against the initial fixture and final replayed repository:
