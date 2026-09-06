@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
 
 import ts from "typescript";
 
@@ -721,3 +723,13 @@ test("plugin runtime fails closed for invalid plugin APIs, adapters, and rules",
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
+
+test("trusted plugin example executes successfully and emits expected finding", () => {
+  const exampleScript = path.resolve("examples/trusted-plugin/run-plugin.mjs");
+  assert.ok(fs.existsSync(exampleScript), "examples/trusted-plugin/run-plugin.mjs should exist");
+  const output = execFileSync(process.execPath, [exampleScript], { encoding: "utf8" });
+  assert.ok(output.includes("Check success (ok): true"));
+  assert.ok(output.includes("Observed database access to T_CUSTOMER at line 4"));
+  assert.ok(output.includes("Trusted plugin example executed successfully!"));
+});
+
