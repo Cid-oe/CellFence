@@ -4,15 +4,43 @@
 
 # CellFence
 
-> **AI coding agents do not need more prompts. They need enforceable architectural boundaries.**
+> **Stop AI coding agents from bypassing architecture boundaries in CI.**
 
 [![CI](https://github.com/pushnanashi2/CellFence/actions/workflows/ci.yml/badge.svg)](https://github.com/pushnanashi2/CellFence/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/cellfence)](https://www.npmjs.com/package/cellfence)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-CellFence is a manifest-driven repository change-governance engine for codebases edited in parallel by coding agents and humans. It turns architectural, ownership, dependency, public-surface, external-dependency, resource, artifact, waiver, baseline, and release evidence into deterministic CLI and CI checks. Its governance core is language-agnostic; v0.x ships first-class TypeScript/JavaScript analysis plus AST-based Python import/public-surface support, built-in resource adapters for selected Prisma, TypeORM, Drizzle, BullMQ, KafkaJS, NestJS, Fastify, Django, FastAPI, SQLAlchemy, and Celery patterns, and packaging-aware manifest inference for common `pyproject.toml`, `setup.cfg`, and static `setup.py` layouts. An accepted baseline turns architectural growth into a review-gated event instead of a self-authorized manifest edit.
+CellFence is a deterministic architecture guardrail for repositories edited by coding agents and humans. It catches architecture drift that ordinary tests and type checks often miss:
 
-Prompt files are context, not enforcement. An agent can import another module's internals, add an undeclared dependency, or widen a public API — and still merge green. CellFence moves these decisions out of prose and into machine-checkable repository contracts.
+- private imports across cell boundaries
+- undeclared cross-cell dependencies
+- public API drift
+- undeclared resource access
+- manifest edits that self-approve architectural growth
+
+Prompt files tell agents what to do. CellFence checks what they actually changed.
+
+A typical failure looks like this:
+
+```ts
+// src/reporting/summary.ts
+import { tokenizeInternal } from "../parser/internal/tokenizer";
+```
+
+The code can compile. The tests can pass. The PR can still be wrong: `reporting` reached into `parser` internals instead of using the declared public entry.
+
+```text
+CellFence check failed.
+[error] CELLFENCE_PRIVATE_IMPORT src/reporting/summary.ts: reporting imports private implementation from parser
+```
+
+The contract says consumers should use the producer cell's declared public entry instead, for example:
+
+```ts
+import { parseDocument } from "../parser/public";
+```
+
+With `baseline check` enabled in CI, changing the code and manifest still fails if it expands the architecture beyond the accepted baseline. Preventing self-approval also requires a trusted CI setup that protects the checker and baseline from unreviewed changes. See [CI setup](docs/ci.md) and [threat model](docs/threat-model.md).
 
 **Status: pre-release v0.x.** Schemas and CLI flags may still change between minor versions. See [implementation status](docs/implementation-status.md) and [current limitations](#status-and-limitations).
 
