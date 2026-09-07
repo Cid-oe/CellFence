@@ -27,4 +27,3 @@ npm run cellfence:self-check
 Do not relax fixture expectations to hide implementation defects. If a fixture reveals an ambiguity, record the ambiguity in the change description and update the protocol only when the intended rule is clear.
 
 Publishing is intentionally not automated in v0.x. Future npm publishing should use GitHub OIDC trusted publishing rather than long-lived package tokens.
-
