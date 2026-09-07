@@ -732,4 +732,3 @@ test("trusted plugin example executes successfully and emits expected finding", 
   assert.ok(output.includes("Observed database access to T_CUSTOMER at line 4"));
   assert.ok(output.includes("Trusted plugin example executed successfully!"));
 });
-

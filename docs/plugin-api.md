@@ -46,4 +46,3 @@ A minimal, runnable example is available at [`examples/trusted-plugin/`](../exam
 ```bash
 node examples/trusted-plugin/run-plugin.mjs
 ```
-
