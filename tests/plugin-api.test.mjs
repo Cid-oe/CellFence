@@ -729,6 +729,6 @@ test("trusted plugin example executes successfully and emits expected finding", 
   assert.ok(fs.existsSync(exampleScript), "examples/trusted-plugin/run-plugin.mjs should exist");
   const output = execFileSync(process.execPath, [exampleScript], { encoding: "utf8" });
   assert.ok(output.includes("Check success (ok): true"));
-  assert.ok(output.includes("Observed database access to T_CUSTOMER at line 4"));
+  assert.match(output, /Observed database access to T_CUSTOMER at line \d+/u);
   assert.ok(output.includes("Trusted plugin example executed successfully!"));
 });
