@@ -210,4 +210,3 @@ This index maps `CELLFENCE_*` rule IDs to representative fixtures under `fixture
 
 - **Invalid Examples (Violations)**:
   - [`fixtures/invalid/computed-require-fail-closed`](../fixtures/invalid/computed-require-fail-closed)
-
