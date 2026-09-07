@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
 import {
@@ -30,6 +30,10 @@ export type ImportReference = {
   kind: ImportKind;
   typeOnly: boolean;
   line: number;
+};
+
+type ImportReferenceWithResolutionBase = ImportReference & {
+  resolutionBasePath?: string;
 };
 
 export type ImportWarning = {
@@ -68,7 +72,12 @@ type PathAliasContext = {
   pathAliases: PathAlias[];
 };
 
-type ImportBindingKind = "require" | "createRequire" | "moduleNamespace" | "nodeModule" | null;
+type RequireBinding = { requireBase: string | undefined };
+type ImportBindingKind = "require" | "createRequire" | "moduleNamespace" | "nodeModule" | RequireBinding | null;
+
+function isRequireBinding(kind: ImportBindingKind | undefined): kind is "require" | RequireBinding {
+  return kind === "require" || (typeof kind === "object" && kind !== null);
+}
 
 type ImportScope = {
   bindings: Map<string, ImportBindingKind>;
@@ -220,7 +229,7 @@ export function candidateModulePaths(basePath: string): string[] {
 
 function candidatePythonModulePaths(basePath: string): string[] {
   const normalizedBasePath = normalizePath(basePath);
-  return [`${normalizedBasePath}.py`, `${normalizedBasePath}/__init__.py`];
+  return [`${normalizedBasePath}/__init__.py`, `${normalizedBasePath}.py`];
 }
 
 function existingFileFromCandidates(candidates: string[]): string | undefined {
@@ -626,18 +635,19 @@ export function extractImports(
       details: { line: position.line + 1, offset: position.character + 1 },
     });
   }
-  const references: ImportReference[] = [];
+  const references: ImportReferenceWithResolutionBase[] = [];
   const importerPath = repoPath(context.rootDir, filePath);
   const rootScope = createRootImportScope();
   rootScope.bindings.set("require", "require");
 
-  function addReference(specifier: string, kind: ImportKind, node: ts.Node, typeOnly: boolean): void {
+  function addReference(specifier: string, kind: ImportKind, node: ts.Node, typeOnly: boolean, resolutionBasePath?: string): void {
     references.push({
       importerPath,
       specifier,
       kind,
       typeOnly,
       line: getLineNumber(sourceFile, node),
+      ...(resolutionBasePath ? { resolutionBasePath } : {}),
     });
   }
 
@@ -1033,7 +1043,8 @@ export function extractImports(
 
   function isRequireLikeExpression(scope: ImportScope, expression: ts.Expression): boolean {
     const unwrapped = unwrapExpression(expression);
-    return (ts.isIdentifier(unwrapped) && bindingFor(scope, unwrapped.text) === "require")
+    return (ts.isIdentifier(unwrapped) && isRequireBinding(bindingFor(scope, unwrapped.text)))
+      || (ts.isCallExpression(unwrapped) && Boolean(createRequireKind(scope, unwrapped.expression)))
       || isModuleRequireProperty(scope, unwrapped)
       || isGlobalRequireProperty(scope, unwrapped)
       || isProcessMainModuleRequireProperty(scope, unwrapped)
@@ -1066,12 +1077,11 @@ export function extractImports(
 
   function bindingKindFromInitializer(scope: ImportScope, initializer: ts.Expression): ImportBindingKind | undefined {
     const unwrapped = unwrapExpression(initializer);
-    if (isRequireLikeExpression(scope, unwrapped)) return "require";
+    if (isRequireLikeExpression(scope, unwrapped)) return requireBindingForExpression(scope, unwrapped);
     if (isNodeModuleObject(scope, unwrapped)) return "nodeModule";
     if (createRequireKind(scope, unwrapped)) return "createRequire";
     if (ts.isCallExpression(unwrapped)) {
-      if (createRequireKind(scope, unwrapped.expression)) return "require";
-      if (staticPropertyName(unwrapped.expression) === "bind" && Boolean(staticPropertyReceiver(unwrapped.expression)) && isRequireLikeExpression(scope, staticPropertyReceiver(unwrapped.expression)!)) return "require";
+      if (staticPropertyName(unwrapped.expression) === "bind" && Boolean(staticPropertyReceiver(unwrapped.expression)) && isRequireLikeExpression(scope, staticPropertyReceiver(unwrapped.expression)!)) return requireBindingForExpression(scope, staticPropertyReceiver(unwrapped.expression)!);
       const moduleSpecifier = literalRequireLikeSpecifier(scope, unwrapped);
       if (moduleSpecifier && isModulePackageSpecifier(moduleSpecifier)) return "moduleNamespace";
     }
@@ -1080,7 +1090,8 @@ export function extractImports(
 
   function requireLikeName(scope: ImportScope, expression: ts.Expression): string | undefined {
     const unwrapped = unwrapExpression(expression);
-    if (ts.isIdentifier(unwrapped) && bindingFor(scope, unwrapped.text) === "require") return unwrapped.text;
+    if (ts.isIdentifier(unwrapped) && isRequireBinding(bindingFor(scope, unwrapped.text))) return unwrapped.text;
+    if (ts.isCallExpression(unwrapped) && createRequireKind(scope, unwrapped.expression)) return "createRequire(...)";
     if (isModuleRequireProperty(scope, unwrapped)) return "module.require";
     if (isProcessMainModuleRequireProperty(scope, unwrapped)) return "process.mainModule.require";
     if (isModuleConstructorLoadProperty(scope, unwrapped)) return "module.constructor._load";
@@ -1093,6 +1104,44 @@ export function extractImports(
     return undefined;
   }
 
+  function requireOrigin(scope: ImportScope, expression: ts.Expression | undefined): string | undefined {
+    if (!expression) return undefined;
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isIdentifier(unwrapped) && unwrapped.text === "__filename" && bindingFor(scope, "__filename") === undefined) return filePath;
+    if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "url"
+      && ts.isMetaProperty(unwrapped.expression) && unwrapped.expression.keywordToken === ts.SyntaxKind.ImportKeyword) return filePath;
+    const literal = staticModuleSpecifier(scope, unwrapped);
+    if (literal !== undefined) {
+      if (!literal.startsWith("file:")) return path.isAbsolute(literal) ? literal : undefined;
+      try {
+        return fileURLToPath(literal);
+      } catch { /* Invalid file URLs fall through to the unresolved result below. */ }
+    }
+    if (ts.isNewExpression(unwrapped) && ts.isIdentifier(unwrapped.expression)
+      && unwrapped.expression.text === "URL" && bindingFor(scope, "URL") === undefined) {
+      const input = unwrapped.arguments?.[0];
+      const base = unwrapped.arguments?.[1];
+      const inputValue = staticModuleSpecifier(scope, input);
+      const basePath = requireOrigin(scope, base);
+      if (inputValue === undefined || (base && basePath === undefined)) return undefined;
+      try { return fileURLToPath(new URL(inputValue, basePath ? pathToFileURL(basePath) : undefined)); }
+      catch { /* Invalid URL combinations fall through to the unresolved result below. */ }
+    }
+    return undefined;
+  }
+
+  function requireBindingForExpression(scope: ImportScope, expression: ts.Expression): "require" | RequireBinding {
+    const unwrapped = unwrapExpression(expression);
+    // Callers have already recognized a require-like expression. Preserve its
+    // binding instead of repeating recognition and silently defaulting an alias.
+    if (ts.isIdentifier(unwrapped)) return bindingFor(scope, unwrapped.text) as "require" | RequireBinding;
+    if (ts.isCallExpression(unwrapped)) {
+      const origin = requireOrigin(scope, unwrapped.arguments[0]);
+      return origin === filePath ? "require" : { requireBase: origin === undefined ? undefined : repoPath(context.rootDir, origin) };
+    }
+    return "require";
+  }
+
   function literalFromApplyArray(scope: ImportScope, node: ts.Expression | undefined): string | undefined {
     if (!node) return undefined;
     const unwrapped = unwrapExpression(node);
@@ -1100,12 +1149,12 @@ export function extractImports(
     return staticModuleSpecifier(scope, unwrapped.elements[0]);
   }
 
-  function requireCallArgument(scope: ImportScope, node: ts.CallExpression): { sourceName: string; specifier?: string } | undefined {
+  function requireCallArgument(scope: ImportScope, node: ts.CallExpression): { sourceName: string; specifier?: string; binding: "require" | RequireBinding } | undefined {
     const directName = requireLikeName(scope, node.expression);
     if (directName) {
       if (node.arguments.length < 1) return undefined;
       const specifier = staticModuleSpecifier(scope, node.arguments[0]);
-      return { sourceName: directName, specifier };
+      return { sourceName: directName, specifier, binding: requireBindingForExpression(scope, node.expression) };
     }
 
     const propertyName = staticPropertyName(node.expression);
@@ -1114,10 +1163,10 @@ export function extractImports(
       const receiverName = requireLikeName(scope, receiver)!;
       if (propertyName === "call") {
         const specifier = staticModuleSpecifier(scope, node.arguments[1]);
-        return { sourceName: `${receiverName}.call`, specifier };
+        return { sourceName: `${receiverName}.call`, specifier, binding: requireBindingForExpression(scope, receiver) };
       }
       const specifier = literalFromApplyArray(scope, node.arguments[1]);
-      return { sourceName: `${receiverName}.apply`, specifier };
+      return { sourceName: `${receiverName}.apply`, specifier, binding: requireBindingForExpression(scope, receiver) };
     }
 
     if (
@@ -1130,7 +1179,7 @@ export function extractImports(
       && isRequireLikeExpression(scope, node.arguments[0])
     ) {
       const specifier = literalFromApplyArray(scope, node.arguments[2]);
-      return { sourceName: "Reflect.apply(require)", specifier };
+      return { sourceName: "Reflect.apply(require)", specifier, binding: requireBindingForExpression(scope, node.arguments[0]) };
     }
     return undefined;
   }
@@ -1173,23 +1222,33 @@ export function extractImports(
     if (!guard) return false;
     const guardedRequireCall = singleReturnRequireCall(scope, node.thenStatement, guard.identifier);
     if (!guardedRequireCall) return false;
-    addReference(guard.specifier, "require", guardedRequireCall, false);
+    addRequireCallReference(guardedRequireCall, "guarded require", guard.specifier, requireBindingForExpression(scope, guardedRequireCall.expression));
     if (node.elseStatement) visit(scope, node.elseStatement);
     return true;
   }
 
-  function addRequireCallReference(node: ts.CallExpression, sourceName: string, specifier: string | undefined): void {
+  function addUnsupportedRequireWarning(node: ts.CallExpression, sourceName: string): void {
+    warnings.push({
+      ruleId: "CELLFENCE_UNSUPPORTED_DYNAMIC_REQUIRE",
+      severity: "warning",
+      filePath: importerPath,
+      message: `computed ${sourceName}() cannot be resolved statically at line ${getLineNumber(sourceFile, node)}`,
+      details: { line: getLineNumber(sourceFile, node) },
+    });
+  }
+
+  function addRequireCallReference(node: ts.CallExpression, sourceName: string, specifier: string | undefined, binding: "require" | RequireBinding): void {
     if (specifier) {
-      addReference(specifier, "require", node, false);
-    } else {
-      warnings.push({
-        ruleId: "CELLFENCE_UNSUPPORTED_DYNAMIC_REQUIRE",
-        severity: "warning",
-        filePath: importerPath,
-        message: `computed ${sourceName}() cannot be resolved statically at line ${getLineNumber(sourceFile, node)}`,
-        details: { line: getLineNumber(sourceFile, node) },
-      });
+      if (binding === "require") {
+        addReference(specifier, "require", node, false);
+        return;
+      }
+      if (binding.requireBase !== undefined) {
+        addReference(specifier, "require", node, false, binding.requireBase);
+        return;
+      }
     }
+    addUnsupportedRequireWarning(node, sourceName);
   }
 
   function dynamicExecutionSourceName(scope: ImportScope, node: ts.CallExpression): string | undefined {
@@ -1405,9 +1464,21 @@ export function extractImports(
         }
       } else {
         const requireCall = requireCallArgument(scope, node);
-        if (requireCall) addRequireCallReference(node, requireCall.sourceName, requireCall.specifier);
+        if (requireCall) addRequireCallReference(node, requireCall.sourceName, requireCall.specifier, requireCall.binding);
+        else if (node.arguments.some((argument) => isRequireLikeExpression(scope, argument))) {
+          addUnsupportedRequireWarning(node, "escaped require");
+        }
         addDynamicExecutionRequireReferences(scope, node);
       }
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && isRequireLikeExpression(scope, node.right)) {
+      warnings.push({
+        ruleId: "CELLFENCE_UNSUPPORTED_DYNAMIC_REQUIRE",
+        severity: "warning",
+        filePath: importerPath,
+        message: `assigned require alias cannot be resolved statically at line ${getLineNumber(sourceFile, node)}`,
+        details: { line: getLineNumber(sourceFile, node) },
+      });
     } else if (ts.isIfStatement(node)) {
       if (addReadonlySetGuardedRequireIfSafe(scope, node)) return;
     } else if (ts.isForStatement(node)) {
@@ -1705,30 +1776,25 @@ function normalizeDeclarationText(text: string): string {
 
 function sourceTextWithoutInternalDeclarations(filePath: string): string {
   const sourceText = fs.readFileSync(filePath, "utf8");
-  // Stryker disable next-line BooleanLiteral: parent pointers are not used while collecting internal declaration line ranges.
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, sourceKindForPath(filePath));
-  // Stryker disable next-line ArrayDeclaration: a non-range sentinel in this private, typed collection has no valid line bounds and cannot remove source text.
-  const lineRanges: Array<{ start: number; end: number }> = [];
+  const ranges: Array<{ start: number; end: number }> = [];
   function visit(node: ts.Node): void {
     if (hasInternalTag(node)) {
-      lineRanges.push({
-        start: sourceFile.getLineAndCharacterOfPosition(node.getFullStart()).line,
-        end: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line,
+      ranges.push({
+        start: node.getFullStart(),
+        end: node.getEnd(),
       });
       return;
     }
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  // Stryker disable next-line ConditionalExpression: with no internal ranges, declaration emit observes the same source text after line splitting.
-  if (lineRanges.length === 0) return sourceText;
-  const removedLines = new Set<number>();
-  for (const range of lineRanges) {
-    for (let line = range.start; line <= range.end; line += 1) removedLines.add(line);
+  let result = sourceText;
+  // Remove exact spans backwards so adjacent public declarations and offsets survive.
+  for (const range of ranges.reverse()) {
+    result = result.slice(0, range.start) + "\n" + result.slice(range.end);
   }
-  const lines = sourceText.split("\n");
-  // Stryker disable next-line StringLiteral: declaration emit normalizes equivalent internal-stripped source text; public surface output is asserted black-box.
-  return lines.filter((_, index) => !removedLines.has(index)).join("\n");
+  return result;
 }
 
 function normalizedDeclarationSourceText(filePath: string): string {
@@ -1797,6 +1863,7 @@ function publicSurfaceSignatureParts(filePath: string): string[] {
   return declarationParts.some(declarationPartIsSubstantive) ? declarationParts : syntaxPublicSurfaceSignatureParts(filePath);
 }
 
+/** @internal */
 export function publicSurfaceHash(filePath: string): string {
   return crypto.createHash("sha256").update(publicSurfaceSignatureParts(filePath).join("\n")).digest("hex");
 }
