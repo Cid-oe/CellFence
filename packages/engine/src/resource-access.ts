@@ -554,7 +554,19 @@ function normalizeSqlSelector(selector: string): string {
   return normalizedSelector.trim();
 }
 
+function stripSqlCommentsAndLiterals(sql: string): string {
+  // Strip block comments /* ... */
+  // Strip single-line comments -- ...
+  // Strip single-quoted string literals '...' (handling escaped '' or \')
+  // Note: We preserve double-quoted identifiers ("table_name") for selector matching.
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--.*$/gm, " ")
+    .replace(/'(?:''|\\'|[^'])*'/g, "''");
+}
+
 function sqlTableAccesses(text: string): Array<{ access: "read" | "write"; selector: string }> {
+  const sanitized = stripSqlCommentsAndLiterals(text);
   const accesses: Array<{ access: "read" | "write"; selector: string }> = [];
   const identifier = String.raw`(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)(?:\s*\.\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*))*`;
   const sqlPattern = new RegExp(
@@ -562,7 +574,7 @@ function sqlTableAccesses(text: string): Array<{ access: "read" | "write"; selec
     "gi",
   );
   let match: RegExpExecArray | null;
-  while ((match = sqlPattern.exec(text)) !== null) {
+  while ((match = sqlPattern.exec(sanitized)) !== null) {
     const verb = match[1].toLowerCase();
     const selector = normalizeSqlSelector(match[2]);
     accesses.push({ access: verb === "from" || verb === "join" ? "read" : "write", selector });
@@ -1802,5 +1814,7 @@ export const resourceAccessTestHooks = {
   routeReceiverLooksHttp,
   queueReceiverLooksExternal,
   selectorLooksQueueTopic,
+  sqlTableAccesses,
+  stripSqlCommentsAndLiterals,
 };
 // Stryker restore all
