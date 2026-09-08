@@ -2286,3 +2286,18 @@ test("bug #52 supported Fastify route methods do not depend on scan hints", (tes
     }
   }
 });
+
+test("bug #77 FROM in SQL string literals and comments is not mistaken for a table reference", () => {
+  const { sqlTableAccesses } = resourceAccessTestHooks;
+  assert.deepEqual(sqlTableAccesses("SELECT 'FROM ghost_table' AS label"), []);
+  assert.deepEqual(sqlTableAccesses("SELECT 1 /* FROM ghost_table */"), []);
+  assert.deepEqual(sqlTableAccesses("SELECT 1 -- FROM ghost_table"), []);
+  assert.deepEqual(sqlTableAccesses("SELECT id FROM actual_table"), [
+    { access: "read", selector: "actual_table" },
+  ]);
+  assert.deepEqual(
+    sqlTableAccesses("SELECT id FROM actual_table WHERE note = 'FROM false_table' /* JOIN ignored_table */"),
+    [{ access: "read", selector: "actual_table" }],
+  );
+});
+
