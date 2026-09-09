@@ -2301,3 +2301,82 @@ test("bug #77 FROM in SQL string literals and comments is not mistaken for a tab
   );
 });
 
+test("bug #77 SQL masking preserves lexical boundaries and table separators", () => {
+  const { sqlTableAccesses, stripSqlCommentsAndLiterals } = resourceAccessTestHooks;
+  const readAccesses = (...selectors) => selectors.map((selector) => ({ access: "read", selector }));
+  const cases = [
+    {
+      sql: "SELECT '-- literal', '/*', '*/', 'it''s FROM ghost' FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 'abc\\' FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT '/*' AS marker FROM swallowed_table WHERE note = '*/'",
+      expected: readAccesses("swallowed_table"),
+    },
+    {
+      sql: "SELECT'x'FROM/* JOIN ghost */actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 1 -- ' FROM ghost_one\nFROM actual_table\n-- JOIN ghost_two",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 1 -- FROM ghost_one\rFROM actual_table",
+      expected: [],
+    },
+    {
+      sql: "SELECT 1 -- FROM ghost_one\r\nFROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: 'SELECT * FROM "orders--archive" JOIN "items/*current*/"',
+      expected: readAccesses("orders--archive", "items/*current*/"),
+    },
+    {
+      sql: 'SELECT * FROM "actual_table" /* JOIN ghost_table */',
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 1 /* ' -- FROM ghost */ FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT * /*/*/ FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 1/*x*/*2 FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 8 / 2 * 3 - 1 FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    {
+      sql: "SELECT 1 /* 8 / 2 * 3 FROM ghost_table */ FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    { sql: "SELECT 1 /* FROM ghost_table", expected: [] },
+    {
+      sql: "SELECT 1/*/ FROM ghost_table */ FROM actual_table",
+      expected: readAccesses("actual_table"),
+    },
+    { sql: "SELECT 'FROM ghost_table", expected: [] },
+  ];
+
+  for (const { sql, expected } of cases) {
+    assert.equal(stripSqlCommentsAndLiterals(sql).length, sql.length, sql);
+    assert.deepEqual(sqlTableAccesses(sql), expected, sql);
+  }
+
+  const entirelyIgnored = "'x'--y\n/*z*/";
+  assert.equal(stripSqlCommentsAndLiterals(entirelyIgnored), " ".repeat(entirelyIgnored.length));
+
+  const quotedIdentifiers = 'SELECT * FROM "orders--archive" JOIN "items/*current*/"';
+  assert.equal(stripSqlCommentsAndLiterals(quotedIdentifiers), quotedIdentifiers);
+});
