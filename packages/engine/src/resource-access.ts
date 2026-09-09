@@ -555,14 +555,61 @@ function normalizeSqlSelector(selector: string): string {
 }
 
 function stripSqlCommentsAndLiterals(sql: string): string {
-  // Strip block comments /* ... */
-  // Strip single-line comments -- ...
-  // Strip single-quoted string literals '...' (handling escaped '' or \')
-  // Note: We preserve double-quoted identifiers ("table_name") for selector matching.
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--.*$/gm, " ")
-    .replace(/'(?:''|\\'|[^'])*'/g, "''");
+  const sanitizedCharacters = sql.split("");
+  let state:
+    | "single-quoted-literal"
+    | "double-quoted-identifier"
+    | "line-comment"
+    | "block-comment"
+    | undefined;
+  for (let index = 0; index !== sql.length; index += 1) {
+    const currentCharacter = sql[index];
+    const nextCharacter = sql[index + 1];
+
+    if (state === "single-quoted-literal") {
+      sanitizedCharacters[index] = " ";
+      if (currentCharacter === "'") state = undefined;
+      continue;
+    }
+
+    if (state === "double-quoted-identifier") {
+      if (currentCharacter === "\"") state = undefined;
+      continue;
+    }
+
+    if (state === "line-comment") {
+      sanitizedCharacters[index] = " ";
+      if (currentCharacter === "\n") state = undefined;
+      continue;
+    }
+
+    if (state === "block-comment") {
+      sanitizedCharacters[index] = " ";
+      if (currentCharacter === "*" && nextCharacter === "/") {
+        sanitizedCharacters[index + 1] = " ";
+        index += 1;
+        state = undefined;
+      }
+      continue;
+    }
+
+    if (currentCharacter === "'") {
+      sanitizedCharacters[index] = " ";
+      state = "single-quoted-literal";
+    } else if (currentCharacter === "\"") {
+      state = "double-quoted-identifier";
+    } else if (currentCharacter === "-" && nextCharacter === "-") {
+      sanitizedCharacters[index] = " ";
+      state = "line-comment";
+    } else if (currentCharacter === "/" && nextCharacter === "*") {
+      sanitizedCharacters[index] = " ";
+      sanitizedCharacters[index + 1] = " ";
+      index += 1;
+      state = "block-comment";
+    }
+  }
+
+  return sanitizedCharacters.join("");
 }
 
 function sqlTableAccesses(text: string): Array<{ access: "read" | "write"; selector: string }> {
