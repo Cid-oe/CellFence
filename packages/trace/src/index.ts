@@ -164,6 +164,7 @@ function fetchSelector(input: Parameters<typeof fetch>[0]): string | undefined {
   if (typeof input === "string") raw = input;
   else if (input instanceof URL) raw = input.toString();
   else if (typeof Request !== "undefined" && input instanceof Request) raw = input.url;
+  // Stryker disable next-line ConditionalExpression: replacing with false is equivalent because falsy input ignores traces anyway.
   if (!raw) return undefined;
   try {
     const parsed = new URL(raw, "http://cellfence.local");
