@@ -531,7 +531,7 @@ test("trace hook records URL and Request fetch inputs", () => {
 test("trace hook ignores fetch inputs that do not expose a URL selector", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "cellfence-trace-fetch-unknown-"));
   fs.writeFileSync(path.join(tempDir, "app.mjs"), `
-    for (const input of [{}, { url: "https://example.invalid/not-a-request" }]) {
+    for (const input of ["", {}, { url: "https://example.invalid/not-a-request" }]) {
       try {
         await fetch(input);
       } catch {}
