@@ -2465,7 +2465,7 @@ test("opentelemetry adapter ignores non-string wrapped values without throwing",
   }]);
 });
 
-test("opentelemetry adapter converts HTTP SERVER spans to access: serve", () => {
+test("opentelemetry adapter handles HTTP SERVER spans to access: serve", () => {
   const evidence = openTelemetryToResourceEvidence({
     resourceSpans: [{
       scopeSpans: [{
