@@ -2479,7 +2479,6 @@ test("opentelemetry adapter converts HTTP SERVER spans to access: serve", () => 
             ],
           },
           {
-                      {
             name: "GET /products",
             kind: "2",
             attributes: [
@@ -2495,7 +2494,8 @@ test("opentelemetry adapter converts HTTP SERVER spans to access: serve", () => 
               { key: "http.request.method", value: { stringValue: "GET" } },
             ],
           },
-          name: "POST /orders",
+          {
+            name: "POST /orders",
             kind: "SPAN_KIND_SERVER",
             attributes: [
               { key: "http.route", value: { stringValue: "/orders" } },
